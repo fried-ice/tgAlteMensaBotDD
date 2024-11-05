@@ -13,6 +13,7 @@ from datetime import timedelta
 from deep_translator import GoogleTranslator
 import random
 import asyncpraw
+import asyncprawcore
 import sys
 import enum
 import inspirobot
@@ -22,7 +23,7 @@ REDDIT_BOT_SECRET = ''
 REDDIT_USER_AGENT = ''
 USER_AGENT_BROWSER = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36'
 
-REDDIT_IMAGE_FILE_ENDINGS = [".png", ".jpg", ".jpeg", ".webp"]
+REDDIT_IMAGE_FILE_ENDINGS = [".jpg", ".png", ".jpeg", ".webp"]
 REDDIT_VIDEO_SITES = ["youtu.be", "youtube.com", "v.redd.it"]
 REDDIT_ANIMATION_FILE_ENDINGS = [".gif"]
 REDDIT_EXCLUDED_ANIMATION_SITES = ["imgur.com", "giphy.com"]
@@ -33,7 +34,8 @@ class RedditPostTypes(enum.Enum):
     image = 2
     animation = 3
     video = 4
-    undefined = 5
+    gallery = 5
+    undefined = 6
 
 
 royal_titles = ["Lé", "Baron", "König", "Archlord", "Genius", "Ritter", "Curry", "Burger", "Mc", "Doktor", "Gentoomaster", "Chef", "Lead Developer", "Sensei"]
@@ -242,75 +244,118 @@ async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_post_type(post):
     post_type = RedditPostTypes.undefined
-    if post.selftext != "":
+    for ending in REDDIT_IMAGE_FILE_ENDINGS:
+        if post.url.endswith(ending):
+            post_type = RedditPostTypes.image
+            break
+    for ending in REDDIT_ANIMATION_FILE_ENDINGS:
+        if post.url.endswith(ending):
+            post_type = RedditPostTypes.animation
+            break
+    for video_site in REDDIT_VIDEO_SITES:
+        if video_site in post.url:
+            post_type = RedditPostTypes.video
+            break
+
+    if post_type == RedditPostTypes.undefined and post.selftext != "":
         post_type = RedditPostTypes.text
-    else:
-        for ending in REDDIT_IMAGE_FILE_ENDINGS:
-            if post.url.endswith(ending):
-                post_type = RedditPostTypes.image
-                break
-        for ending in REDDIT_ANIMATION_FILE_ENDINGS:
-            if post.url.endswith(ending):
-                post_type = RedditPostTypes.animation
-                break
-        for video_site in REDDIT_VIDEO_SITES:
-            if video_site in post.url:
-                post_type = RedditPostTypes.video
-                break
+
+    if post_type == RedditPostTypes.undefined and "/gallery/" in post.url:
+        post_type = RedditPostTypes.gallery
+
     return post_type
 
 
-def get_subreddit_images(subreddit, offset=0, count=5):
+async def get_subreddit_images(subreddit, offset=0, count=5):
     images = []
     reddit = asyncpraw.Reddit(client_id=REDDIT_BOT_ID, client_secret=REDDIT_BOT_SECRET, user_agent=REDDIT_USER_AGENT)
-    for post in reddit.subreddit(subreddit).hot(limit=count):
+    sub = await reddit.subreddit(subreddit)
+    async for post in sub.hot(limit=count):
         if get_post_type(post) == RedditPostTypes.image:
             images.append(post.url)
+    await reddit.close()
     return images
+
+
+def get_gallery_images(post):
+    gallery = []
+    for i in post.media_metadata.items():
+        url = i[1]['p'][0]['u']
+        url = url.split("?")[0].replace("preview", "i")
+        gallery.append(tg.InputMediaPhoto(media=url, has_spoiler=post.over_18))
+    return gallery
 
 
 async def send_subreddit_posts(subreddit, update: Update, context: ContextTypes.DEFAULT_TYPE, offset=0, count=5):
     reddit = asyncpraw.Reddit(client_id=REDDIT_BOT_ID, client_secret=REDDIT_BOT_SECRET, user_agent=REDDIT_USER_AGENT)
-    posts_sent = False
-    content = await reddit.subreddit(subreddit)
+    posts_sent = 0
+    search_limit = 50
     try:
-        async for post in content.hot(limit=count):
-            if not post.stickied:
-                post_type = get_post_type(post)
-                if post_type == RedditPostTypes.text:
-                    message = "*" + post.title + "* \n" + post.selftext
-                    if len(message) > 1000:
-                        message = message[:1000]
-                        message = message + "*(...)* [" + post.url + "]"
-                    await context.bot.send_message(chat_id=update.message.chat_id, text=message,
-                                                   parse_mode=tg.ParseMode.MARKDOWN)
-                    posts_sent = True
-                elif post_type == RedditPostTypes.image:
-                    # The telegram API apparently does not accept progressive JPEGs
-                    # If this is the case, skip this post and continue
-                    try:
-                        await context.bot.send_photo(chat_id=update.message.chat_id, photo=post.url, caption=post.title)
-                        posts_sent = True
-                    except tg.error.BadRequest:
-                        continue
-                elif post_type == RedditPostTypes.video:
-                    await context.bot.send_message(chat_id=update.message.chat_id, text=post.url)
-                    posts_sent = True
-                elif post_type == RedditPostTypes.animation:
-                    for site in REDDIT_EXCLUDED_ANIMATION_SITES:
-                        if site in post.url:
-                            pass
-                    await context.bot.send_animation(chat_id=update.message.chat_id, animation=post.url,
-                                                     caption=post.title)
-                    posts_sent = True
+        content = await reddit.subreddit(subreddit, fetch=True)
+        async for post in content.hot(limit=search_limit):
+            try:
+                if not post.stickied:
+                    post_type = get_post_type(post)
+                    if post_type == RedditPostTypes.text:
+                        message = "*" + tg.helpers.escape_markdown(post.title, version=2) + "* \n" + tg.helpers.escape_markdown(post.selftext, version=2)
+                        if len(message) > 1000:
+                            message = message[:1000]
+                            message = message + "[\\.\\.\\.](" + post.url + ")"
+                        await context.bot.send_message(chat_id=update.message.chat_id, text=message,
+                                                       parse_mode="MarkdownV2")
+                        posts_sent += 1
+                    elif post_type == RedditPostTypes.image:
+                        # The telegram API apparently does not accept progressive JPEGs
+                        # If this is the case, skip this post and continue
+                        try:
+                            await context.bot.send_photo(chat_id=update.message.chat_id, photo=post.url, caption=post.title, has_spoiler=post.over_18)
+                            posts_sent += 1
+                        except tg.error.BadRequest:
+                            continue
+                    elif post_type == RedditPostTypes.video:
+                        await context.bot.send_message(chat_id=update.message.chat_id, text=post.url)
+                        posts_sent += 1
+                    elif post_type == RedditPostTypes.animation:
+                        for site in REDDIT_EXCLUDED_ANIMATION_SITES:
+                            if site in post.url:
+                                pass
+                        title = tg.helpers.escape_markdown(post.title, version=2)
+                        await context.bot.send_animation(chat_id=update.message.chat_id, animation=post.url,
+                                                         caption=title, has_spoiler=post.over_18, parse_mode="MarkdownV2")
+                        posts_sent += 1
+                    elif post_type == RedditPostTypes.gallery:
+                        gallery = get_gallery_images(post)
+                        await context.bot.send_media_group(chat_id=update.message.chat_id, media=gallery[:10], caption=post.title)
+                        posts_sent += 1
 
+                if posts_sent == count:
+                    break
+            except Exception as ex:
+                print(ex)
+                await context.bot.send_message(chat_id=update.message.chat_id,
+                                               text="Could not get post.")
+                posts_sent += 1
+                continue
+
+    except asyncprawcore.Redirect:
+        await context.bot.send_message(chat_id=update.message.chat_id, text="This subreddit does not exist.")
+        return
+    except asyncprawcore.NotFound:
+        await context.bot.send_message(chat_id=update.message.chat_id, text="This subreddit was banned.")
+        return
+    except asyncprawcore.Forbidden:
+        await context.bot.send_message(chat_id=update.message.chat_id, text="This subreddit is private.")
+        return
     except Exception as ex:
         print(ex)
         await context.bot.send_message(chat_id=update.message.chat_id,
                                        text="Something went wrong internally. I am deeply sorry.")
         return
 
-    if not posts_sent:
+    finally:
+        await reddit.close()
+
+    if posts_sent == 0:
         await context.bot.send_message(chat_id=update.message.chat_id, text="No compatible Posts were found.")
 
 
@@ -339,10 +384,12 @@ async def r(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reddit = asyncpraw.Reddit(client_id=REDDIT_BOT_ID, client_secret=REDDIT_BOT_SECRET, user_agent=REDDIT_USER_AGENT)
-    sub = await reddit.random_subreddit(nsfw=False)
+    nsfw = random.random() < 0.01
+    sub = await reddit.random_subreddit(nsfw=nsfw)
     sub_name = sub.display_name
     await context.bot.send_message(chat_id=update.message.chat_id, text="Random subreddit: \"" + sub_name + "\"")
     await send_subreddit_posts(sub_name, update, context)
+    await reddit.close()
 
 
 async def wisdom(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,47 +445,13 @@ async def inspiro_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_photo(chat_id=update.message.chat_id, photo=quote.url)
 
 
-async def get_pepe(update, context):
-    await context.bot.send_photo(
-        chat_id=update.message.chat_id,
-        photo="http://www.thispepedoesnotexist.co.uk/out/pepe (" + str(random.randint(1, 9760)) + ").png"
-    )
-
-
-async def get_song(update, context):
-    instruments = ['ukulele', 'piano', 'trumpet', 'rock_guitar']
-    instrument = "piano" if len(context.args) == 0 else context.args[0]
-    if instrument not in instruments:
-        await context.bot.send_message(chat_id=update.message.chat_id,
-                                       text='Instrument not supported, choose one of: ' + str(instruments))
-        return
-    resp_song = requests.get('https://this-voice-does-not-exist.com/api/get_song?&instrument=' + instrument)
-    resp_cover = requests.get('https://this-voice-does-not-exist.com/api/get_song_cover?&instrument=' + instrument)
-
-    if not resp_song.ok or not resp_cover.ok:
-        await context.bot.send_message(chat_id=update.message.chat_id,
-                                 text='Something went wrong internally. I am deeply sorry.')
-        return
-
-    await context.bot.send_photo(
-        chat_id=update.message.chat_id,
-        photo='https://this-voice-does-not-exist.com/' + resp_cover.text
-    )
-    with io.BytesIO(resp_song.content) as buf:
-        await context.bot.send_audio(
-            chat_id=update.message.chat_id,
-            audio=buf, performer='https://this-voice-does-not-exist.com/music',
-            title=instrument + '.wav',
-            duration=45
-        )
-
-
 async def inline_r(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query.query
     results = []
     try:
-        images = get_subreddit_images(query, count=40)
-    except Exception:
+        images = await get_subreddit_images(query, count=40)
+    except Exception as e:
+        logging.exception(e)
         results.append(tg.InlineQueryResultArticle(0, "No", tg.InputTextMessageContent("No!")))
     else:
         if len(images) == 0:
@@ -487,8 +500,6 @@ def main():
     application.add_handler(CommandHandler('wisdom', wisdom))
     application.add_handler(CommandHandler('choose', choose))
     application.add_handler(CommandHandler('inspiration', inspiro_bot))
-    application.add_handler(CommandHandler('pepe', get_pepe))
-    application.add_handler(CommandHandler('song', get_song))
 
     if reddit_enable:
         global REDDIT_BOT_ID
