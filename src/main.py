@@ -21,7 +21,7 @@ import inspirobot
 REDDIT_BOT_ID = ''
 REDDIT_BOT_SECRET = ''
 REDDIT_USER_AGENT = ''
-USER_AGENT_BROWSER = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36'
+USER_AGENT_BROWSER = 'Mozilla/5.0 (X11; Linux x86_64; rv:134.0) Gecko/20100101 Firefox/134.0'
 
 REDDIT_IMAGE_FILE_ENDINGS = [".jpg", ".png", ".jpeg", ".webp"]
 REDDIT_VIDEO_SITES = ["youtu.be", "youtube.com", "v.redd.it"]
