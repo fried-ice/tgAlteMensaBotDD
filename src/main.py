@@ -349,7 +349,7 @@ async def send_subreddit_posts(subreddit, update: Update, context: ContextTypes.
     except Exception as ex:
         print(ex)
         await context.bot.send_message(chat_id=update.message.chat_id,
-                                       text="Something went wrong internally. I am deeply sorry.")
+                                       text="Something went wrong internally. I am deeply sorry: " + str(ex))
         return
 
     finally:
@@ -384,12 +384,19 @@ async def r(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reddit = asyncpraw.Reddit(client_id=REDDIT_BOT_ID, client_secret=REDDIT_BOT_SECRET, user_agent=REDDIT_USER_AGENT)
-    nsfw = random.random() < 0.01
-    sub = await reddit.random_subreddit(nsfw=nsfw)
-    sub_name = sub.display_name
-    await context.bot.send_message(chat_id=update.message.chat_id, text="Random subreddit: \"" + sub_name + "\"")
-    await send_subreddit_posts(sub_name, update, context)
-    await reddit.close()
+    try:
+        nsfw = random.random() < 0.01
+        sub = await reddit.random_subreddit(nsfw=nsfw)
+        sub_name = sub.display_name
+        await context.bot.send_message(chat_id=update.message.chat_id, text="Random subreddit: \"" + sub_name + "\"")
+        await send_subreddit_posts(sub_name, update, context)
+        await reddit.close()
+    except Exception as ex:
+        print(ex)
+        await context.bot.send_message(chat_id=update.message.chat_id,
+                                    text="Something went wrong internally. I am deeply sorry: " + str(ex))
+    finally:
+        await reddit.close()
 
 
 async def wisdom(update: Update, context: ContextTypes.DEFAULT_TYPE):
